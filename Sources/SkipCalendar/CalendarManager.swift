@@ -52,7 +52,7 @@ public final class CalendarManager {
 
     /// Request calendar read/write permission from the user.
     /// Returns `.authorized` if granted, `.denied` if rejected.
-    public static func requestCalendarPermission() async -> PermissionAuthorization {
+    /* SKIP @nobridge */ public static func requestCalendarPermission() async -> PermissionAuthorization {
         #if !SKIP
         let current = queryCalendarPermission()
         if current != .unknown { return current }
@@ -93,7 +93,7 @@ public final class CalendarManager {
 
     /// Request reminder permission (iOS only).
     /// On Android, this requests calendar permission since it covers reminders.
-    public static func requestReminderPermission() async -> PermissionAuthorization {
+    /* SKIP @nobridge */ public static func requestReminderPermission() async -> PermissionAuthorization {
         #if !SKIP
         let current = queryReminderPermission()
         if current != .unknown { return current }
