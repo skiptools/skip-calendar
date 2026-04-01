@@ -198,14 +198,14 @@ struct EventEditRepresentable : UIViewControllerRepresentable {
         Coordinator(parent: self)
     }
 
-    class Coordinator : NSObject, EKEventEditViewDelegate {
+    class Coordinator : NSObject, @preconcurrency EKEventEditViewDelegate {
         let parent: EventEditRepresentable
 
         init(parent: EventEditRepresentable) {
             self.parent = parent
         }
 
-        func eventEditViewController(_ controller: EKEventEditViewController, didCompleteWith action: EKEventEditViewAction) {
+        @MainActor func eventEditViewController(_ controller: EKEventEditViewController, didCompleteWith action: EKEventEditViewAction) {
             let result: EventEditorResult
             switch action {
             case .saved: result = .saved
@@ -240,14 +240,14 @@ struct EventViewRepresentable : UIViewControllerRepresentable {
         Coordinator(parent: self)
     }
 
-    class Coordinator : NSObject, EKEventViewDelegate {
+    class Coordinator : NSObject, @preconcurrency EKEventViewDelegate {
         let parent: EventViewRepresentable
 
         init(parent: EventViewRepresentable) {
             self.parent = parent
         }
 
-        func eventViewController(_ controller: EKEventViewController, didCompleteWith action: EKEventViewAction) {
+        @MainActor func eventViewController(_ controller: EKEventViewController, didCompleteWith action: EKEventViewAction) {
             let result: EventEditorResult
             switch action {
             case .done: result = .saved
