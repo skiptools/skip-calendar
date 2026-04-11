@@ -208,3 +208,342 @@ let logger: Logger = Logger(subsystem: "SkipCalendar", category: "Tests")
     }
 }
 
+// MARK: - Integration Tests (real calendar database)
+
+/// Returns true only when running on a real Android device or emulator.
+///
+/// These integration tests are disabled on all Apple platforms because the
+/// XCTest host process cannot communicate with the calendar/EventKit daemon
+/// — even on the iOS simulator the process lacks the required entitlements
+/// and every EKEventStore call fails with a communication error.
+/// On macOS the test process similarly lacks calendar entitlements.
+///
+/// On Android the tests are disabled under Robolectric (no real
+/// ContentProvider) but run on a connected emulator or device when
+/// ANDROID_SERIAL is set.
+private func isLiveDevice() -> Bool {
+    #if SKIP
+    return android.os.Build.FINGERPRINT != nil && "robolectric" != android.os.Build.FINGERPRINT
+    #else
+    return false
+    #endif
+}
+
+/// Helper that creates a test calendar, runs `body` with its ID, then
+/// cleans up the calendar (and all its events) afterward.
+private func withTestCalendar(title: String = "SkipCalTest", body: (String) throws -> Void) throws {
+    let manager = CalendarManager.shared
+    let calID = try manager.createCalendar(title: title, color: "#0099FF")
+    do {
+        try body(calID)
+        try manager.deleteCalendar(id: calID)
+    } catch {
+        try? manager.deleteCalendar(id: calID)
+        throw error
+    }
+}
+
+@Suite struct CalendarIntegrationTests {
+
+    // SKIP INSERT:
+    // @get:org.junit.Rule
+    // val grantPermissionRule: androidx.test.rule.GrantPermissionRule = androidx.test.rule.GrantPermissionRule.grant(android.Manifest.permission.READ_CALENDAR, android.Manifest.permission.WRITE_CALENDAR)
+
+    // MARK: - Calendars
+
+    @Test func testGetCalendars() throws {
+        guard isLiveDevice() else { return }
+
+        let calendars = try CalendarManager.shared.getCalendars()
+        // The emulator should have at least one calendar; just verify
+        // the call succeeds and returns a list.
+        #expect(calendars.count >= 0)
+    }
+
+    @Test func testCreateAndDeleteCalendar() throws {
+        guard isLiveDevice() else { return }
+
+        let manager = CalendarManager.shared
+        let calID = try manager.createCalendar(title: "SkipCalInteg", color: "#FF5500")
+
+        let calendars = try manager.getCalendars()
+        let found = calendars.first { $0.id == calID }
+        #expect(found != nil)
+        #expect(found?.title == "SkipCalInteg")
+
+        try manager.deleteCalendar(id: calID)
+    }
+
+    // MARK: - Events: Create & Fetch
+
+    @Test func testCreateAndFetchEvent() throws {
+        guard isLiveDevice() else { return }
+
+        try withTestCalendar { calID in
+            let start = Date(timeIntervalSinceNow: 86400)
+            let end = Date(timeIntervalSinceNow: 86400 + 3600)
+            let event = CalendarEvent(
+                calendarID: calID,
+                title: "SkipTest Event",
+                location: "Test Room",
+                notes: "Integration test event",
+                startDate: start,
+                endDate: end
+            )
+
+            let eventID = try CalendarManager.shared.createEvent(event)
+
+            let fetched = try CalendarManager.shared.getEvent(id: eventID)
+            #expect(fetched != nil)
+            #expect(fetched?.title == "SkipTest Event")
+            #expect(fetched?.location == "Test Room")
+            #expect(fetched?.notes == "Integration test event")
+
+            try CalendarManager.shared.deleteEvent(id: eventID)
+        }
+    }
+
+    @Test func testCreateAllDayEvent() throws {
+        guard isLiveDevice() else { return }
+
+        try withTestCalendar { calID in
+            let start = Date(timeIntervalSinceNow: 86400)
+            let end = Date(timeIntervalSinceNow: 86400 * 2)
+            let event = CalendarEvent(
+                calendarID: calID,
+                title: "SkipTest All Day",
+                startDate: start,
+                endDate: end,
+                isAllDay: true
+            )
+
+            let eventID = try CalendarManager.shared.createEvent(event)
+
+            let fetched = try CalendarManager.shared.getEvent(id: eventID)
+            #expect(fetched != nil)
+            #expect(fetched?.title == "SkipTest All Day")
+            #expect(fetched?.isAllDay == true)
+
+            try CalendarManager.shared.deleteEvent(id: eventID)
+        }
+    }
+
+    @Test func testCreateEventWithAlarm() throws {
+        guard isLiveDevice() else { return }
+
+        try withTestCalendar { calID in
+            let start = Date(timeIntervalSinceNow: 86400)
+            let end = Date(timeIntervalSinceNow: 86400 + 3600)
+            let event = CalendarEvent(
+                calendarID: calID,
+                title: "SkipTest Alarm",
+                startDate: start,
+                endDate: end,
+                alarms: [CalendarAlarm(relativeOffset: -15.0)]
+            )
+
+            let eventID = try CalendarManager.shared.createEvent(event)
+
+            let fetched = try CalendarManager.shared.getEvent(id: eventID)
+            #expect(fetched != nil)
+            #expect(fetched?.alarms.count == 1)
+            #expect(fetched?.alarms.first?.relativeOffset == -15.0)
+
+            try CalendarManager.shared.deleteEvent(id: eventID)
+        }
+    }
+
+    // MARK: - Events: Query by date range
+
+    @Test func testGetEventsInRange() throws {
+        guard isLiveDevice() else { return }
+
+        try withTestCalendar { calID in
+            let manager = CalendarManager.shared
+            let tomorrow = Date(timeIntervalSinceNow: 86400)
+            let event = CalendarEvent(
+                calendarID: calID,
+                title: "SkipTest Range",
+                startDate: tomorrow,
+                endDate: Date(timeIntervalSince1970: tomorrow.timeIntervalSince1970 + 3600)
+            )
+            let eventID = try manager.createEvent(event)
+
+            // Query a range that includes the event
+            let rangeStart = Date(timeIntervalSinceNow: 0)
+            let rangeEnd = Date(timeIntervalSinceNow: 86400 * 3)
+            let events = try manager.getEvents(calendarIDs: [calID], startDate: rangeStart, endDate: rangeEnd)
+            let found = events.first { $0.title == "SkipTest Range" }
+            #expect(found != nil)
+
+            try manager.deleteEvent(id: eventID)
+        }
+    }
+
+    @Test func testGetEventsOutOfRange() throws {
+        guard isLiveDevice() else { return }
+
+        try withTestCalendar { calID in
+            let manager = CalendarManager.shared
+            let nextWeek = Date(timeIntervalSinceNow: 86400 * 7)
+            let event = CalendarEvent(
+                calendarID: calID,
+                title: "SkipTest OutOfRange",
+                startDate: nextWeek,
+                endDate: Date(timeIntervalSince1970: nextWeek.timeIntervalSince1970 + 3600)
+            )
+            let eventID = try manager.createEvent(event)
+
+            // Query a range that does NOT include the event
+            let rangeStart = Date(timeIntervalSinceNow: 0)
+            let rangeEnd = Date(timeIntervalSinceNow: 86400 * 2)
+            let events = try manager.getEvents(calendarIDs: [calID], startDate: rangeStart, endDate: rangeEnd)
+            let found = events.first { $0.title == "SkipTest OutOfRange" }
+            #expect(found == nil)
+
+            try manager.deleteEvent(id: eventID)
+        }
+    }
+
+    // MARK: - Update
+
+    @Test func testUpdateEvent() throws {
+        guard isLiveDevice() else { return }
+
+        try withTestCalendar { calID in
+            let manager = CalendarManager.shared
+            let start = Date(timeIntervalSinceNow: 86400)
+            let end = Date(timeIntervalSinceNow: 86400 + 3600)
+            let event = CalendarEvent(
+                calendarID: calID,
+                title: "SkipTest Before",
+                startDate: start,
+                endDate: end
+            )
+            let eventID = try manager.createEvent(event)
+
+            let toUpdate = CalendarEvent(
+                id: eventID,
+                calendarID: calID,
+                title: "SkipTest After",
+                location: "Updated Room",
+                notes: "Updated notes",
+                startDate: start,
+                endDate: end
+            )
+            try manager.updateEvent(toUpdate)
+
+            let fetched = try manager.getEvent(id: eventID)
+            #expect(fetched != nil)
+            #expect(fetched?.title == "SkipTest After")
+            #expect(fetched?.location == "Updated Room")
+            #expect(fetched?.notes == "Updated notes")
+
+            try manager.deleteEvent(id: eventID)
+        }
+    }
+
+    // MARK: - Delete
+
+    @Test func testDeleteEvent() throws {
+        guard isLiveDevice() else { return }
+
+        try withTestCalendar { calID in
+            let manager = CalendarManager.shared
+            let start = Date(timeIntervalSinceNow: 86400)
+            let end = Date(timeIntervalSinceNow: 86400 + 3600)
+            let event = CalendarEvent(
+                calendarID: calID,
+                title: "SkipTest Delete",
+                startDate: start,
+                endDate: end
+            )
+            let eventID = try manager.createEvent(event)
+
+            // Verify it exists
+            let before = try manager.getEvent(id: eventID)
+            #expect(before != nil)
+
+            // Delete it
+            try manager.deleteEvent(id: eventID)
+
+            // Verify it's gone
+            let after = try manager.getEvent(id: eventID)
+            #expect(after == nil)
+        }
+    }
+
+    // MARK: - Multiple events
+
+    @Test func testMultipleEvents() throws {
+        guard isLiveDevice() else { return }
+
+        try withTestCalendar { calID in
+            let manager = CalendarManager.shared
+            var eventIDs: [String] = []
+            for i in 0..<3 {
+                let start = Date(timeIntervalSinceNow: 86400 + Double(i) * 3600)
+                let end = Date(timeIntervalSinceNow: 86400 + Double(i) * 3600 + 1800)
+                let event = CalendarEvent(
+                    calendarID: calID,
+                    title: "SkipTest Multi \(i)",
+                    startDate: start,
+                    endDate: end
+                )
+                let id = try manager.createEvent(event)
+                eventIDs.append(id)
+            }
+
+            let rangeStart = Date(timeIntervalSinceNow: 0)
+            let rangeEnd = Date(timeIntervalSinceNow: 86400 * 3)
+            let events = try manager.getEvents(calendarIDs: [calID], startDate: rangeStart, endDate: rangeEnd)
+            let skipEvents = events.filter { $0.title.hasPrefix("SkipTest Multi") }
+            #expect(skipEvents.count == 3)
+
+            for id in eventIDs {
+                try manager.deleteEvent(id: id)
+            }
+        }
+    }
+
+    // MARK: - Recurrence
+
+    @Test func testEventWithRecurrence() throws {
+        guard isLiveDevice() else { return }
+
+        try withTestCalendar { calID in
+            let manager = CalendarManager.shared
+            let start = Date(timeIntervalSinceNow: 86400)
+            let end = Date(timeIntervalSinceNow: 86400 + 3600)
+            let rule = RecurrenceRule(frequency: .weekly, interval: 1, occurrenceCount: 5)
+            let event = CalendarEvent(
+                calendarID: calID,
+                title: "SkipTest Recurring",
+                startDate: start,
+                endDate: end,
+                recurrenceRules: [rule]
+            )
+
+            let eventID = try manager.createEvent(event)
+
+            let fetched = try manager.getEvent(id: eventID)
+            #expect(fetched != nil)
+            #expect(fetched?.title == "SkipTest Recurring")
+            #expect(fetched?.recurrenceRules.count == 1)
+            #expect(fetched?.recurrenceRules.first?.frequency == .weekly)
+
+            try manager.deleteEvent(id: eventID, span: .futureEvents)
+        }
+    }
+
+    // MARK: - Default calendar
+
+    @Test func testGetDefaultCalendar() throws {
+        guard isLiveDevice() else { return }
+
+        // On Android emulators there may not be a default calendar,
+        // so just verify the call doesn't throw.
+        let _ = try CalendarManager.shared.getDefaultCalendar()
+    }
+}
+
