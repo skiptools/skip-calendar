@@ -811,10 +811,13 @@ public final class CalendarManager {
         let rruleStr = cursorString(cursor, CalendarContract.Events.RRULE)
         let hasAlarm = cursorInt(cursor, CalendarContract.Events.HAS_ALARM) == 1
 
-        let eventStartDate = Date(timeIntervalSince1970: Double(startMillis) / 1000.0)
+        // All-day events are stored in UTC (see eventToAndroidContentValues); convert
+        // their midnight-UTC anchors back to the local calendar day so the returned
+        // dates match what iOS EventKit reports for the same event.
+        let eventStartDate = allDay ? allDayLocalMidnightDate(startMillis) : Date(timeIntervalSince1970: Double(startMillis) / 1000.0)
         let eventEndDate: Date
         if endMillis > Int64(0) {
-            eventEndDate = Date(timeIntervalSince1970: Double(endMillis) / 1000.0)
+            eventEndDate = allDay ? allDayLocalMidnightDate(endMillis) : Date(timeIntervalSince1970: Double(endMillis) / 1000.0)
         } else {
             eventEndDate = eventStartDate
         }
@@ -946,10 +949,26 @@ public final class CalendarManager {
             values.put(CalendarContract.Events.DESCRIPTION, notes)
         }
 
-        values.put(CalendarContract.Events.DTSTART, Int64(event.startDate.timeIntervalSince1970 * 1000.0))
-        values.put(CalendarContract.Events.DTEND, Int64(event.endDate.timeIntervalSince1970 * 1000.0))
-        values.put(CalendarContract.Events.ALL_DAY, event.isAllDay ? 1 : 0)
-        values.put(CalendarContract.Events.EVENT_TIMEZONE, event.timeZone ?? TimeZone.current.identifier)
+        if event.isAllDay {
+            // Android requires all-day events to be anchored to midnight in UTC with
+            // EVENT_TIMEZONE = "UTC"; otherwise they render on the wrong (often adjacent)
+            // day. EventKit handles this transparently on iOS, so we normalize here.
+            let startMillis = allDayUTCMidnightMillis(event.startDate)
+            var endMillis = allDayUTCMidnightMillis(event.endDate)
+            if endMillis <= startMillis {
+                // Ensure a valid one-day span when the caller passes start == end.
+                endMillis = startMillis + Int64(86400000)
+            }
+            values.put(CalendarContract.Events.DTSTART, startMillis)
+            values.put(CalendarContract.Events.DTEND, endMillis)
+            values.put(CalendarContract.Events.ALL_DAY, 1)
+            values.put(CalendarContract.Events.EVENT_TIMEZONE, "UTC")
+        } else {
+            values.put(CalendarContract.Events.DTSTART, Int64(event.startDate.timeIntervalSince1970 * 1000.0))
+            values.put(CalendarContract.Events.DTEND, Int64(event.endDate.timeIntervalSince1970 * 1000.0))
+            values.put(CalendarContract.Events.ALL_DAY, 0)
+            values.put(CalendarContract.Events.EVENT_TIMEZONE, event.timeZone ?? TimeZone.current.identifier)
+        }
 
         switch event.availability {
         case .free: values.put(CalendarContract.Events.AVAILABILITY, CalendarContract.Events.AVAILABILITY_FREE)
@@ -1051,6 +1070,45 @@ public final class CalendarManager {
         }
 
         return results
+    }
+
+    // MARK: Android All-Day Date Utilities
+
+    /// Convert a date into the midnight-UTC timestamp (in milliseconds) that Android
+    /// uses to store all-day events. The date's calendar day is taken in the local time
+    /// zone (matching how the caller and iOS interpret an all-day date) and re-anchored
+    /// to midnight UTC.
+    private func allDayUTCMidnightMillis(_ date: Date) -> Int64 {
+        var localCalendar = Calendar(identifier: .gregorian)
+        localCalendar.timeZone = TimeZone.current
+        let comps = localCalendar.dateComponents([.year, .month, .day], from: date)
+
+        var utcCalendar = Calendar(identifier: .gregorian)
+        utcCalendar.timeZone = TimeZone(identifier: "UTC")!
+        var utcComps = DateComponents()
+        utcComps.year = comps.year
+        utcComps.month = comps.month
+        utcComps.day = comps.day
+        let midnight = utcCalendar.date(from: utcComps) ?? date
+        return Int64(midnight.timeIntervalSince1970 * 1000.0)
+    }
+
+    /// Inverse of `allDayUTCMidnightMillis`: take a midnight-UTC all-day timestamp and
+    /// return a `Date` at midnight of the same calendar day in the local time zone, so
+    /// all-day events read back the way iOS EventKit reports them.
+    private func allDayLocalMidnightDate(_ utcMillis: Int64) -> Date {
+        let utcDate = Date(timeIntervalSince1970: Double(utcMillis) / 1000.0)
+        var utcCalendar = Calendar(identifier: .gregorian)
+        utcCalendar.timeZone = TimeZone(identifier: "UTC")!
+        let comps = utcCalendar.dateComponents([.year, .month, .day], from: utcDate)
+
+        var localCalendar = Calendar(identifier: .gregorian)
+        localCalendar.timeZone = TimeZone.current
+        var localComps = DateComponents()
+        localComps.year = comps.year
+        localComps.month = comps.month
+        localComps.day = comps.day
+        return localCalendar.date(from: localComps) ?? utcDate
     }
 
     // MARK: Android Color Utilities
