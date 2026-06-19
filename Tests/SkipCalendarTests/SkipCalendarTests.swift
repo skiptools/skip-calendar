@@ -536,6 +536,69 @@ private func withTestCalendar(title: String = "SkipCalTest", body: (String) thro
         }
     }
 
+    /// A recurring series must appear in a window that starts *after* its first
+    /// occurrence. The previous Events-table query filtered on the master DTSTART,
+    /// so a later weekly occurrence was silently dropped; querying the Instances
+    /// table expands the series, matching iOS `predicateForEvents`.
+    @Test func testRecurringEventAppearsInLaterWindow() throws {
+        guard isLiveDevice() else { return }
+
+        try withTestCalendar { calID in
+            let manager = CalendarManager.shared
+            let start = Date(timeIntervalSinceNow: 86400)
+            let end = Date(timeIntervalSince1970: start.timeIntervalSince1970 + 3600)
+            let rule = RecurrenceRule(frequency: .weekly, interval: 1, occurrenceCount: 5)
+            let event = CalendarEvent(
+                calendarID: calID,
+                title: "SkipTest WeeklyExpand",
+                startDate: start,
+                endDate: end,
+                recurrenceRules: [rule]
+            )
+            let eventID = try manager.createEvent(event)
+
+            // Window begins five days out — past the first occurrence (+1 day) but
+            // covering the second weekly occurrence (~+8 days).
+            let rangeStart = Date(timeIntervalSinceNow: 86400 * 5)
+            let rangeEnd = Date(timeIntervalSinceNow: 86400 * 12)
+            let events = try manager.getEvents(calendarIDs: [calID], startDate: rangeStart, endDate: rangeEnd)
+            let found = events.filter { $0.title == "SkipTest WeeklyExpand" }
+            #expect(found.count >= 1)
+
+            try manager.deleteEvent(id: eventID, span: .futureEvents)
+        }
+    }
+
+    /// A recurring series must expand to one event per occurrence within the window.
+    /// The Events-table query returned only the single master row.
+    @Test func testRecurringEventExpandsToMultipleOccurrences() throws {
+        guard isLiveDevice() else { return }
+
+        try withTestCalendar { calID in
+            let manager = CalendarManager.shared
+            let start = Date(timeIntervalSinceNow: 86400)
+            let end = Date(timeIntervalSince1970: start.timeIntervalSince1970 + 3600)
+            let rule = RecurrenceRule(frequency: .weekly, interval: 1, occurrenceCount: 5)
+            let event = CalendarEvent(
+                calendarID: calID,
+                title: "SkipTest WeeklyMulti",
+                startDate: start,
+                endDate: end,
+                recurrenceRules: [rule]
+            )
+            let eventID = try manager.createEvent(event)
+
+            // A 24-day window covers four of the five weekly occurrences.
+            let rangeStart = Date(timeIntervalSinceNow: 0)
+            let rangeEnd = Date(timeIntervalSinceNow: 86400 * 24)
+            let events = try manager.getEvents(calendarIDs: [calID], startDate: rangeStart, endDate: rangeEnd)
+            let occurrences = events.filter { $0.title == "SkipTest WeeklyMulti" }
+            #expect(occurrences.count >= 3)
+
+            try manager.deleteEvent(id: eventID, span: .futureEvents)
+        }
+    }
+
     // MARK: - Default calendar
 
     @Test func testGetDefaultCalendar() throws {
