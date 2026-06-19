@@ -328,6 +328,43 @@ private func withTestCalendar(title: String = "SkipCalTest", body: (String) thro
         }
     }
 
+    /// An all-day event must round-trip to the same local calendar day. Android stores
+    /// all-day events at midnight UTC; without normalization the day shifts for devices
+    /// in non-UTC time zones. This asserts the day is preserved regardless of zone.
+    @Test func testAllDayEventPreservesLocalDay() throws {
+        guard isLiveDevice() else { return }
+
+        try withTestCalendar { calID in
+            let manager = CalendarManager.shared
+            let start = Date(timeIntervalSinceNow: 86400)
+            let end = Date(timeIntervalSinceNow: 86400 * 2)
+            let event = CalendarEvent(
+                calendarID: calID,
+                title: "SkipTest AllDayTZ",
+                startDate: start,
+                endDate: end,
+                isAllDay: true
+            )
+            let eventID = try manager.createEvent(event)
+
+            let fetched = try manager.getEvent(id: eventID)
+            #expect(fetched != nil)
+            #expect(fetched?.isAllDay == true)
+
+            var cal = Calendar(identifier: .gregorian)
+            cal.timeZone = TimeZone.current
+            if let fetchedStart = fetched?.startDate {
+                let inComps = cal.dateComponents([.year, .month, .day], from: start)
+                let outComps = cal.dateComponents([.year, .month, .day], from: fetchedStart)
+                #expect(inComps.year == outComps.year)
+                #expect(inComps.month == outComps.month)
+                #expect(inComps.day == outComps.day)
+            }
+
+            try manager.deleteEvent(id: eventID)
+        }
+    }
+
     @Test func testCreateEventWithAlarm() throws {
         guard isLiveDevice() else { return }
 
