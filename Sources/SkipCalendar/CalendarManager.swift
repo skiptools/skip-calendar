@@ -682,43 +682,49 @@ public final class CalendarManager {
 
     private func getAndroidEvents(calendarIDs: [String]?, startDate: Date, endDate: Date) throws -> [CalendarEvent] {
         let projection = [
-            CalendarContract.Events._ID,
-            CalendarContract.Events.CALENDAR_ID,
-            CalendarContract.Events.TITLE,
-            CalendarContract.Events.EVENT_LOCATION,
-            CalendarContract.Events.DESCRIPTION,
-            CalendarContract.Events.DTSTART,
-            CalendarContract.Events.DTEND,
-            CalendarContract.Events.ALL_DAY,
-            CalendarContract.Events.EVENT_TIMEZONE,
-            CalendarContract.Events.AVAILABILITY,
-            CalendarContract.Events.STATUS,
-            CalendarContract.Events.ORGANIZER,
-            CalendarContract.Events.RRULE,
-            CalendarContract.Events.HAS_ALARM
+            CalendarContract.Instances.EVENT_ID,
+            CalendarContract.Instances.BEGIN,
+            CalendarContract.Instances.END,
+            CalendarContract.Instances.CALENDAR_ID,
+            CalendarContract.Instances.TITLE,
+            CalendarContract.Instances.EVENT_LOCATION,
+            CalendarContract.Instances.DESCRIPTION,
+            CalendarContract.Instances.ALL_DAY,
+            CalendarContract.Instances.EVENT_TIMEZONE,
+            CalendarContract.Instances.AVAILABILITY,
+            CalendarContract.Instances.STATUS,
+            CalendarContract.Instances.ORGANIZER,
+            CalendarContract.Instances.RRULE,
+            CalendarContract.Instances.HAS_ALARM
         ]
 
         let startMillis = Int64(startDate.timeIntervalSince1970 * 1000.0)
         let endMillis = Int64(endDate.timeIntervalSince1970 * 1000.0)
 
-        var selection = "(" + CalendarContract.Events.DTSTART + " >= ? AND " + CalendarContract.Events.DTSTART + " <= ?)"
-        var selectionArgs: [String] = ["\(startMillis)", "\(endMillis)"]
+        // Query the Instances table rather than Events. Instances expands recurring
+        // events into their individual occurrences and returns any occurrence that
+        // overlaps [startMillis, endMillis], matching iOS `predicateForEvents`.
+        // A query on the Events table would instead only match the master row by its
+        // DTSTART, missing both overlapping events and recurrences whose series began
+        // outside the window. The window is supplied by appending begin/end to the URI.
+        let builder = CalendarContract.Instances.CONTENT_URI.buildUpon()
+        ContentUris.appendId(builder, startMillis)
+        ContentUris.appendId(builder, endMillis)
+        let uri = builder.build()
 
+        let projectionArray = projection.toList().toTypedArray()
+        let sortOrder = CalendarContract.Instances.BEGIN + " ASC"
+
+        var queryResult: android.database.Cursor? = nil
         if let ids = calendarIDs, !ids.isEmpty {
             let placeholders = ids.map { _ in "?" }.joined(separator: ",")
-            selection = selection + " AND " + CalendarContract.Events.CALENDAR_ID + " IN (" + placeholders + ")"
-            for id in ids {
-                selectionArgs.append(id)
-            }
+            let selection = CalendarContract.Instances.CALENDAR_ID + " IN (" + placeholders + ")"
+            queryResult = contentResolver.query(uri, projectionArray, selection, ids.toList().toTypedArray(), sortOrder)
+        } else {
+            queryResult = contentResolver.query(uri, projectionArray, nil, nil, sortOrder)
         }
 
-        guard let cursor = contentResolver.query(
-            CalendarContract.Events.CONTENT_URI,
-            projection.toList().toTypedArray(),
-            selection,
-            selectionArgs.toList().toTypedArray(),
-            CalendarContract.Events.DTSTART + " ASC"
-        ) else {
+        guard let cursor = queryResult else {
             return []
         }
 
@@ -726,7 +732,7 @@ public final class CalendarManager {
         var results: [CalendarEvent] = []
 
         while cursor.moveToNext() {
-            results.append(eventFromAndroidCursor(cursor))
+            results.append(eventFromAndroidInstanceCursor(cursor))
         }
 
         return results
@@ -767,14 +773,36 @@ public final class CalendarManager {
         return nil
     }
 
+    /// Parse a row from a query against the Events table (used by single-event lookups).
     private func eventFromAndroidCursor(_ cursor: android.database.Cursor) -> CalendarEvent {
         let id = "\(cursorLong(cursor, CalendarContract.Events._ID))"
         let calendarID = "\(cursorLong(cursor, CalendarContract.Events.CALENDAR_ID))"
+        let dtStart = cursorLong(cursor, CalendarContract.Events.DTSTART)
+        let dtEnd = cursorLong(cursor, CalendarContract.Events.DTEND)
+        return buildAndroidEvent(id: id, calendarID: calendarID, startMillis: dtStart, endMillis: dtEnd, cursor: cursor)
+    }
+
+    /// Parse a row from a query against the Instances table (used by date-range queries).
+    ///
+    /// A recurring series yields one row per occurrence; the occurrence's start/end come
+    /// from BEGIN/END while all occurrences share the master EVENT_ID. This mirrors iOS,
+    /// where `predicateForEvents` returns expanded occurrences sharing one event identifier.
+    private func eventFromAndroidInstanceCursor(_ cursor: android.database.Cursor) -> CalendarEvent {
+        let id = "\(cursorLong(cursor, CalendarContract.Instances.EVENT_ID))"
+        let calendarID = "\(cursorLong(cursor, CalendarContract.Instances.CALENDAR_ID))"
+        let begin = cursorLong(cursor, CalendarContract.Instances.BEGIN)
+        let end = cursorLong(cursor, CalendarContract.Instances.END)
+        return buildAndroidEvent(id: id, calendarID: calendarID, startMillis: begin, endMillis: end, cursor: cursor)
+    }
+
+    /// Build a `CalendarEvent` from the shared event columns. The id, calendar, and time
+    /// window are resolved by the caller because they differ between the Events table
+    /// (`_ID`/`DTSTART`/`DTEND`) and the Instances view (`EVENT_ID`/`BEGIN`/`END`); every
+    /// other column name is identical across both, so they are read here from the cursor.
+    private func buildAndroidEvent(id: String, calendarID: String, startMillis: Int64, endMillis: Int64, cursor: android.database.Cursor) -> CalendarEvent {
         let title = cursorString(cursor, CalendarContract.Events.TITLE) ?? ""
         let location = cursorString(cursor, CalendarContract.Events.EVENT_LOCATION)
         let notes = cursorString(cursor, CalendarContract.Events.DESCRIPTION)
-        let dtStart = cursorLong(cursor, CalendarContract.Events.DTSTART)
-        let dtEnd = cursorLong(cursor, CalendarContract.Events.DTEND)
         let allDay = cursorInt(cursor, CalendarContract.Events.ALL_DAY) == 1
         let timeZone = cursorString(cursor, CalendarContract.Events.EVENT_TIMEZONE)
         let availabilityInt = cursorInt(cursor, CalendarContract.Events.AVAILABILITY)
@@ -783,10 +811,10 @@ public final class CalendarManager {
         let rruleStr = cursorString(cursor, CalendarContract.Events.RRULE)
         let hasAlarm = cursorInt(cursor, CalendarContract.Events.HAS_ALARM) == 1
 
-        let eventStartDate = Date(timeIntervalSince1970: Double(dtStart) / 1000.0)
+        let eventStartDate = Date(timeIntervalSince1970: Double(startMillis) / 1000.0)
         let eventEndDate: Date
-        if dtEnd > Int64(0) {
-            eventEndDate = Date(timeIntervalSince1970: Double(dtEnd) / 1000.0)
+        if endMillis > Int64(0) {
+            eventEndDate = Date(timeIntervalSince1970: Double(endMillis) / 1000.0)
         } else {
             eventEndDate = eventStartDate
         }
