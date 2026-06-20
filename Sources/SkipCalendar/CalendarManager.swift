@@ -274,6 +274,38 @@ public final class CalendarManager {
         #endif
     }
 
+    // MARK: - Change Observation
+
+    /// Observe changes to the calendar database, including edits made by other apps
+    /// (such as the system Calendar app). The `handler` is invoked on the main thread
+    /// whenever calendar data changes; reload your data inside it.
+    ///
+    /// The returned `CalendarObserver` keeps the subscription alive — retain it for as
+    /// long as you want notifications, and call `cancel()` (or release it) to stop.
+    ///
+    /// On iOS this wraps the `EKEventStoreChanged` notification; on Android it registers
+    /// a `ContentObserver` on the calendar content URI.
+    /* SKIP @nobridge */ public func observeChanges(_ handler: @escaping () -> Void) -> CalendarObserver {
+        #if !SKIP
+        let token = NotificationCenter.default.addObserver(forName: .EKEventStoreChanged, object: nil, queue: .main) { _ in
+            handler()
+        }
+        return CalendarObserver(token: token)
+        #else
+        let resolver = ProcessInfo.processInfo.androidContext.contentResolver
+        var observer: android.database.ContentObserver? = nil
+        /* SKIP INSERT:
+        observer = object : android.database.ContentObserver(android.os.Handler(android.os.Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) {
+                handler()
+            }
+        }
+        */
+        resolver.registerContentObserver(CalendarContract.CONTENT_URI, true, observer!)
+        return CalendarObserver(contentObserver: observer!)
+        #endif
+    }
+
     // MARK: - iOS EventKit Helpers
 
     #if !SKIP
@@ -1138,6 +1170,43 @@ public final class CalendarManager {
         case CalendarContract.Calendars.CAL_ACCESS_RESPOND: return .respond
         case CalendarContract.Calendars.CAL_ACCESS_ROOT: return .root
         default: return .none
+        }
+    }
+    #endif
+}
+
+/// A cancellable handle for a calendar-change subscription created by
+/// `CalendarManager.observeChanges(_:)`.
+///
+/// Retain it for as long as you want to receive notifications. Call `cancel()` to stop
+/// observing; it is safe to call more than once.
+public final class CalendarObserver {
+    #if !SKIP
+    private var token: NSObjectProtocol?
+
+    init(token: NSObjectProtocol) {
+        self.token = token
+    }
+
+    /// Stop observing calendar changes.
+    public func cancel() {
+        if let token = token {
+            NotificationCenter.default.removeObserver(token)
+            self.token = nil
+        }
+    }
+    #else
+    private var contentObserver: android.database.ContentObserver?
+
+    init(contentObserver: android.database.ContentObserver) {
+        self.contentObserver = contentObserver
+    }
+
+    /// Stop observing calendar changes.
+    public func cancel() {
+        if let observer = contentObserver {
+            ProcessInfo.processInfo.androidContext.contentResolver.unregisterContentObserver(observer)
+            self.contentObserver = nil
         }
     }
     #endif
