@@ -645,5 +645,36 @@ private func withTestCalendar(title: String = "SkipCalTest", body: (String) thro
         // so just verify the call doesn't throw.
         let _ = try CalendarManager.shared.getDefaultCalendar()
     }
+
+    // MARK: - Change Observation
+
+    @Test func testObserveChangesRegisterAndCancel() throws {
+        guard isLiveDevice() else { return }
+
+        try withTestCalendar { calID in
+            let manager = CalendarManager.shared
+            let observer = manager.observeChanges {
+                logger.info("calendar changed")
+            }
+
+            // Make a change that notifies observers. Delivery is asynchronous and
+            // dispatched to the main thread, so we verify the register/cancel plumbing
+            // works without crashing rather than asserting the handler fired.
+            let start = Date(timeIntervalSinceNow: 86400)
+            let end = Date(timeIntervalSinceNow: 86400 + 3600)
+            let event = CalendarEvent(
+                calendarID: calID,
+                title: "SkipTest Observe",
+                startDate: start,
+                endDate: end
+            )
+            let eventID = try manager.createEvent(event)
+
+            observer.cancel()
+            observer.cancel()  // cancelling twice must be safe
+
+            try manager.deleteEvent(id: eventID)
+        }
+    }
 }
 

@@ -334,6 +334,34 @@ for attendee in attendees {
 | `type` | `AttendeeType` | `.unknown`, `.person`, `.room`, `.group`, `.resource` |
 | `isCurrentUser` | `Bool` | Whether this is the current user (iOS) |
 
+## Observing Changes
+
+Observe changes to the calendar database — including edits made by other apps such as
+the system Calendar app — and refresh your UI when they occur:
+
+```swift
+final class CalendarViewModel: ObservableObject {
+    private var observer: CalendarObserver?
+
+    func start() {
+        observer = CalendarManager.shared.observeChanges { [weak self] in
+            // Called on the main thread whenever calendar data changes.
+            self?.reload()
+        }
+    }
+
+    func stop() {
+        observer?.cancel()
+        observer = nil
+    }
+}
+```
+
+The handler is invoked on the main thread. Retain the returned `CalendarObserver` for as
+long as you want notifications; call `cancel()` to stop (it is safe to call more than
+once). On iOS this wraps the `EKEventStoreChanged` notification; on Android it registers
+a `ContentObserver` on the calendar content URI.
+
 ## Event Editor UI
 
 Present the system event editor using the `withEventEditor` view modifier:
